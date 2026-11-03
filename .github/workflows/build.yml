@@ -1,0 +1,274 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Create Android project from SmsSync.kt
+        run: |
+          mkdir -p proj/app proj/app/src/main proj/app/src/main/java/com/smssync/app proj/app/src/main/res/drawable proj/app/src/main/res/mipmap-anydpi-v26 proj/app/src/main/res/values proj/app/src/main/res/values-v27 proj/signing
+          cp SmsSync.kt proj/app/src/main/java/com/smssync/app/SmsSync.kt
+          cat > proj/settings.gradle.kts <<'__EOF__'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "SmsSync"
+          include(":app")
+          __EOF__
+          cat > proj/build.gradle.kts <<'__EOF__'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.20" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.0.20" apply false
+          }
+          __EOF__
+          cat > proj/gradle.properties <<'__EOF__'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          kotlin.code.style=official
+          __EOF__
+          cat > proj/app/build.gradle.kts <<'__EOF__'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+          }
+
+          android {
+              namespace = "com.smssync.app"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.smssync.app"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              // একই কিস্টোর দিয়ে সব বিল্ড সাইন হয়, তাই নতুন APK পুরনোটার ওপর আপডেট হিসেবে বসে।
+              signingConfigs {
+                  create("fixed") {
+                      storeFile = file("../signing/sync.keystore")
+                      storePassword = "smssync123"
+                      keyAlias = "smssync"
+                      keyPassword = "smssync123"
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      signingConfig = signingConfigs.getByName("fixed")
+                  }
+                  debug {
+                      signingConfig = signingConfigs.getByName("fixed")
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+              buildFeatures {
+                  compose = true
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.activity:activity-compose:1.9.2")
+              implementation(platform("androidx.compose:compose-bom:2024.09.00"))
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.foundation:foundation")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.work:work-runtime-ktx:2.9.1")
+          }
+          __EOF__
+          cat > proj/app/src/main/AndroidManifest.xml <<'__EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.RECEIVE_SMS" />
+              <uses-permission android:name="android.permission.READ_SMS" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+              <application
+                  android:allowBackup="false"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:theme="@style/Theme.SmsSync"
+                  android:usesCleartextTraffic="false">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait"
+                      android:configChanges="orientation|screenSize|keyboardHidden|uiMode|screenLayout|smallestScreenSize"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <receiver
+                      android:name=".SmsReceiver"
+                      android:exported="true"
+                      android:permission="android.permission.BROADCAST_SMS">
+                      <intent-filter android:priority="999">
+                          <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+                      </intent-filter>
+                  </receiver>
+
+                  <receiver
+                      android:name=".BootReceiver"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                      </intent-filter>
+                  </receiver>
+              </application>
+          </manifest>
+          __EOF__
+          cat > proj/app/src/main/res/values/strings.xml <<'__EOF__'
+          <resources>
+              <string name="app_name">SMS Sync</string>
+          </resources>
+          __EOF__
+          cat > proj/app/src/main/res/values/colors.xml <<'__EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="bg">#FFF5F6F8</color>
+              <color name="bg_bottom">#FFFFFFFF</color>
+              <color name="icon_bg">#FFF2F3F5</color>
+          </resources>
+          __EOF__
+          cat > proj/app/src/main/res/values/themes.xml <<'__EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.SmsSync" parent="android:Theme.Material.Light.NoActionBar">
+                  <item name="android:windowBackground">@color/bg</item>
+                  <item name="android:statusBarColor">@color/bg</item>
+                  <item name="android:navigationBarColor">@color/bg_bottom</item>
+                  <item name="android:windowLightStatusBar">true</item>
+              </style>
+          </resources>
+          __EOF__
+          cat > proj/app/src/main/res/values-v27/themes.xml <<'__EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.SmsSync" parent="android:Theme.Material.Light.NoActionBar">
+                  <item name="android:windowBackground">@color/bg</item>
+                  <item name="android:statusBarColor">@color/bg</item>
+                  <item name="android:navigationBarColor">@color/bg_bottom</item>
+                  <item name="android:windowLightStatusBar">true</item>
+                  <item name="android:windowLightNavigationBar">true</item>
+              </style>
+          </resources>
+          __EOF__
+          cat > proj/app/src/main/res/drawable/ic_bubble.xml <<'__EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp"
+              android:height="24dp"
+              android:viewportWidth="24"
+              android:viewportHeight="24">
+              <path
+                  android:pathData="M21,11.5a8.4,8.4 0,0 1,-9 8.4,8.6 8.6,0 0,1 -3.6,-0.8L3,21l1.9,-5.4A8.4,8.4 0,1 1,21 11.5z"
+                  android:strokeColor="#111111"
+                  android:strokeWidth="2"
+                  android:strokeLineCap="round"
+                  android:strokeLineJoin="round" />
+          </vector>
+          __EOF__
+          cat > proj/app/src/main/res/drawable/ic_launcher_fg.xml <<'__EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <group
+                  android:scaleX="2.2"
+                  android:scaleY="2.2"
+                  android:translateX="27.6"
+                  android:translateY="27.6">
+                  <path
+                      android:pathData="M21,11.5a8.4,8.4 0,0 1,-9 8.4,8.6 8.6,0 0,1 -3.6,-0.8L3,21l1.9,-5.4A8.4,8.4 0,1 1,21 11.5z"
+                      android:strokeColor="#111111"
+                      android:strokeWidth="2"
+                      android:strokeLineCap="round"
+                      android:strokeLineJoin="round" />
+              </group>
+          </vector>
+          __EOF__
+          cat > proj/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'__EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/icon_bg" />
+              <foreground android:drawable="@drawable/ic_launcher_fg" />
+          </adaptive-icon>
+          __EOF__
+          echo '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' | base64 -d > proj/signing/sync.keystore
+
+      - name: Build release APK
+        working-directory: proj
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: cp proj/app/build/outputs/apk/release/app-release.apk SMS-Sync.apk
+
+      - name: Save APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SMS-Sync-apk
+          path: SMS-Sync.apk
+
+      - name: Publish APK in Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: SMS Sync build ${{ github.run_number }}
+          files: SMS-Sync.apk
